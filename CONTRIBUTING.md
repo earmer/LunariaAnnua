@@ -3,15 +3,18 @@
 ## Branch-and-PR policy
 
 **Every change to `main` must go through a pull request — including changes made
-by maintainers.** Direct pushes to `main` are not allowed.
+by maintainers.** Branch protection enforces this: direct pushes, force pushes,
+and branch deletion are blocked for everyone, admins included.
 
 1. Create a topic branch from `main`:
    `feat/...`, `fix/...`, `docs/...`, `chore/...`, or `refactor/...`.
 2. Commit on that branch. Keep each commit focused and its message in
    `type: summary` form (for example `feat: add HandleKey encoding`).
 3. Push the branch and open a pull request against `main`.
-4. Make sure formatting, Clippy, and tests pass (see below). At least one
-   approving review is required; a maintainer may self-merge after checks pass.
+4. Make sure formatting, Clippy, and tests pass (see below). A maintainer may
+   self-merge after checks pass. The repository currently requires a pull
+   request but **zero approving reviews** because there is a single maintainer;
+   raise the required approval count to 1 once a second maintainer joins.
 5. Merge with squash or merge commits. Delete the topic branch afterwards.
 
 Emergency fixes follow the same flow. If `main` must be restored, use a revert
