@@ -1,0 +1,7 @@
+# Third-party reference sources fetched for research (see docs plan); not vendored.
+/refs/
+
+# Rust build artifacts
+/target/
+
+.DS_Store
