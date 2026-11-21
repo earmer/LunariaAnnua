@@ -10,6 +10,12 @@
 2. **用户派发的长程、需求详细的任务**，且用户明确说出 “go ahead”“开始”“继续执行”“按这个做” 等授权语：可以 commit，并根据任务量与改动范围自行决定 commit 的粒度和数量（例如按模块或阶段拆分，避免一个巨型提交）。
 3. 用户明确要求“提交 / commit”时：按用户指定的范围提交；未指定范围时，只提交本次任务直接相关的文件。
 
+## 代码质量与 lint 抑制
+
+- 禁止滥用 `#[allow(...)]`、`#[expect(...)]`、`#![allow(...)]`、`#[cfg_attr(..., allow(...))]`，尤其是用 `#[allow(clippy::...)]`（如 `too_many_arguments`、`type_complexity`、`needless_range_loop`、`dead_code`、`unused_*` 等）来阻止、抑制 Clippy 或编译器报错。
+- 出现告警时优先重构代码。确需抑制的极少数情况，必须在同一处写明具体原因，并事先获得用户明确同意。
+- CI 中的 `cargo clippy --all-targets --all-features -- -D warnings` 是硬性门槛，不得通过新增 allow 属性绕过。
+
 ## 其他约束
 
 - 提交信息使用清晰的 `type: summary` 格式；不夹带无关改动。
