@@ -3,5 +3,22 @@
 
 # Rust build artifacts
 /target/
+**/*.rs.bk
+*.pdb
+*.profraw
 
+# C/C++ intermediate artifacts (cc crate / manual builds)
+*.o
+*.a
+*.so
+*.dylib
+
+# Coverage
+/coverage/
+lcov.info
+
+# Editors and OS
 .DS_Store
+.idea/
+.vscode/
+*.swp

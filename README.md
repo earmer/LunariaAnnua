@@ -27,3 +27,15 @@ crates/
 Further crates (`lunaria-vm`, `lunaria-syntax`, `lunaria-compiler`,
 `lunaria-ffi`, `lunaria-stdlib`, `lunaria-arc`) are added in roadmap order;
 `members = ["crates/*"]` picks them up automatically.
+
+## Contributing
+
+All changes, including those made by maintainers, must be proposed on a topic
+branch and merged through a pull request to `main`. See
+[`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
+## License
+
+Lunaria Annua is free software licensed under the GNU General Public License,
+version 3 or later (`GPL-3.0-or-later`). See [`LICENSE`](./LICENSE).
+
