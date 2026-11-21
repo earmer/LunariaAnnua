@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/earmercarey/LunariaAnnua"
+repository = "https://github.com/earmer/LunariaAnnua"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
