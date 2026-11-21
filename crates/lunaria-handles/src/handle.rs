@@ -89,6 +89,26 @@ impl<T> Slot<T> {
         // SAFETY: `version` is odd, so a match proves this slot is occupied.
         (self.version == version).then(|| unsafe { &mut *self.storage.value })
     }
+
+    fn drop_value(&mut self) {
+        if self.version & 1 == 1 {
+            // Mark vacant first so the unwinding guard cannot drop this twice.
+            self.version = self.version.wrapping_add(1);
+            // SAFETY: this occupied slot owns one live value, now moved conceptually
+            // out of the union before its destructor is invoked.
+            unsafe { ManuallyDrop::drop(&mut self.storage.value) };
+        }
+    }
+}
+
+struct SlotDropGuard<'a, T>(&'a mut [Slot<T>]);
+
+impl<T> Drop for SlotDropGuard<'_, T> {
+    fn drop(&mut self) {
+        for slot in self.0.iter_mut() {
+            slot.drop_value();
+        }
+    }
 }
 
 /// Dense generational storage shared by RID and weak-reference lookups.
@@ -155,6 +175,10 @@ impl<T> SlotMap<T> {
     }
 
     /// Validates a weak handle and borrows its entry if still alive.
+    ///
+    /// This is strictly a borrowed validity lookup tied to `&self`; it does not
+    /// create an owning strong reference. Any ARC retention must be performed
+    /// synchronously by the VM while the borrow is held.
     pub fn upgrade(&self, key: HandleKey) -> Option<&T> {
         self.get(key)
     }
@@ -176,14 +200,14 @@ impl<T> Default for SlotMap<T> {
 
 impl<T> Drop for SlotMap<T> {
     fn drop(&mut self) {
-        if mem::needs_drop::<T>() {
-            for slot in &mut self.slots {
-                if slot.version & 1 == 1 {
-                    // SAFETY: occupied slot owns one live value; `Drop` runs once.
-                    unsafe { ManuallyDrop::drop(&mut slot.storage.value) };
-                }
-            }
+        if !mem::needs_drop::<T>() {
+            return;
         }
+        let guard = SlotDropGuard(&mut self.slots);
+        for slot in guard.0.iter_mut() {
+            slot.drop_value();
+        }
+        mem::forget(guard);
     }
 }
 
@@ -247,6 +271,37 @@ mod tests {
         drop(map.remove(removed));
         assert_eq!(drops.get(), 1);
         drop(map);
+        assert_eq!(drops.get(), 2);
+    }
+
+    #[test]
+    fn panicking_drop_still_drops_remaining_values() {
+        struct Spy {
+            drops: Rc<Cell<usize>>,
+            panic: bool,
+        }
+        impl Drop for Spy {
+            fn drop(&mut self) {
+                self.drops.set(self.drops.get() + 1);
+                if self.panic {
+                    panic!("boom");
+                }
+            }
+        }
+
+        let drops = Rc::new(Cell::new(0));
+        let mut map = SlotMap::new();
+        map.insert(Spy {
+            drops: Rc::clone(&drops),
+            panic: true,
+        });
+        map.insert(Spy {
+            drops: Rc::clone(&drops),
+            panic: false,
+        });
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(map)));
+        assert!(result.is_err());
         assert_eq!(drops.get(), 2);
     }
 }

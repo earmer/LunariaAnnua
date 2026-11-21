@@ -80,6 +80,9 @@ impl FrameArena {
     }
 
     /// Allocates raw bytes for `layout` by bumping downward and masking alignment.
+    ///
+    /// The returned pointer is uninitialized and must not be dereferenced after
+    /// a reset that invalidates its position.
     pub fn alloc_layout(&self, layout: Layout) -> Option<NonNull<u8>> {
         if layout.size() == 0 {
             // SAFETY: `Layout::align()` is always a non-zero power of two.
@@ -134,10 +137,14 @@ impl FrameArena {
         }
     }
 
-    /// Reclaims every allocation made after `checkpoint` without dropping it.
+    /// Restores a saved chunk position without running destructors.
+    ///
+    /// Checkpoints are reusable positions, not branch-capability tokens. Any
+    /// in-bounds checkpoint from this arena may be restored while no allocations
+    /// are borrowed, regardless of intervening resets or allocation branches.
     pub fn reset_to(&mut self, cp: Checkpoint) {
         assert_eq!(cp.owner, self.start, "checkpoint from another FrameArena");
-        assert!(cp.ptr >= self.ptr.get(), "invalidated FrameArena checkpoint");
+        assert!(cp.ptr >= self.start && cp.ptr <= self.end, "checkpoint outside FrameArena");
         self.ptr.set(cp.ptr);
     }
 
@@ -222,13 +229,29 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "invalidated FrameArena checkpoint")]
-    fn invalidated_checkpoint_panics() {
+    fn checkpoints_are_reusable_across_allocation_branches() {
         let mut arena = FrameArena::with_capacity(64);
-        let earlier = arena.checkpoint();
+        let start = arena.checkpoint();
         arena.alloc(1_u64);
-        let later = arena.checkpoint();
-        arena.reset_to(earlier);
-        arena.reset_to(later);
+        let branch = arena.checkpoint();
+        arena.alloc(2_u64);
+        arena.reset_to(start);
+        arena.alloc(3_u64);
+        arena.alloc(4_u64);
+
+        arena.reset_to(branch);
+        assert_eq!(arena.used(), 8);
+    }
+
+    #[test]
+    #[should_panic(expected = "checkpoint outside FrameArena")]
+    fn out_of_bounds_checkpoint_panics() {
+        let mut arena = FrameArena::with_capacity(64);
+        let beyond_end = arena.end.addr().get() + 1;
+        let cp = Checkpoint {
+            owner: arena.start,
+            ptr: arena.end.with_addr(NonZeroUsize::new(beyond_end).unwrap()),
+        };
+        arena.reset_to(cp);
     }
 }
