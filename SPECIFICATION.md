@@ -1,9 +1,24 @@
-# Lunaria Annua (`Lunaria`) 编程语言与虚拟机架构白皮书（v1.1 源码级校准版）
+# Lunaria Annua (`Lunaria`) 编程语言与虚拟机架构白皮书（v1.2 技术栈定案版）
 
-**文档版本：** 1.1.0-Verified
+**文档版本：** 1.2.0-FinalStack
 **语言全称：** `Lunaria Annua`（通用简称：**`Lunaria`**）
 **工程标识：** 源码后缀 `.luna` | 字节码后缀 `.lbc` (`Magic: 0x4C554E41 "LUNA"`) | 编译器 `lunac`
 **定位：** 面向跨端高刷图形渲染（Skia）、高带宽双宿主交互（Rust / Go）与端侧毫秒级动态热编译（AI Agent / 插件沙箱）的静态强类型通用字节码语言及虚拟机规范。
+
+---
+
+## v1.2 技术栈定案：字节码分发内核明确采用 C99，彻底移除 Zig 选项
+
+在 v1.1 已确定“Rust 主体 + 少量原生分发内核”的基础上，本版对内核语言选型一锤定音：**采用 C99（`vm_dispatch.c`），由 `cc` crate 在 `build.rs` 中自动编译；不再考虑 Zig，也不依赖 Rust Nightly 的 `become`。最终技术栈为 98% Rust Stable + 2% C99。**
+
+决策依据（工程性价比优先）：
+
+1. **构建工具链零摩擦（最关键）：** `cc` crate 是 Cargo 生态基石，`build.rs` 只需三行即可让 `cargo build` 自动调用系统自带的 Clang / GCC 并把内核静态链入；Go 宿主工程、iOS Xcode 打包机与 GitHub Actions CI 均无需额外安装任何第三方语言编译器。若选 Zig，每台开发机、每个 Docker 容器和每台 iOS 打包机都要固定一个特定 Zig 版本，而 Zig 尚未到 1.0（如 0.13 → 0.14 的 `build.zig` API 破坏性变更），为 300 行代码背上一个易腐烂的编译器依赖，长期维护成本不可接受。
+2. **机器码 100% 等价（零性能差距）：** C 的 `__attribute__((musttail)) return next_op(...);` 与 Zig 的 `@call(.always_tail, next_op, ...)` 最终走同一个 LLVM 后端的同一条 `musttail` IR 通道，生成的 ARM64 / x86_64 汇编无字节差异；C 的 Computed Goto（`goto *dispatch_table[opcode]`）降级路径也已由 CPython / Luau 稳定验证 30 年。
+3. **可直接复刻现成工业级 C 宏：** Wasm3 `m3_exec.h` 的 `d_m3OpSig`、`M3_MUSTTAIL` 平台探测宏，以及 Luau 的 `LUAU_INSN_A/B/C/D` 解码宏本身就是 C / C++，可近乎原样移植，省去语法翻译与二次验证。
+4. **Rust ↔ C 类型同步与调试器支持最成熟：** `cbindgen` 可由 Rust 侧 `#[repr(C)] pub struct VmContext` 自动生成 `vm_context.h`，`vm_dispatch.c` 直接 `#include`，从编译期杜绝字段偏移错位；LLDB / GDB / Xcode Instruments / `cargo flamegraph` 对 Rust 调 C 的栈帧符号与 DWARF 行号支持最完善，不会出现混编 Zig 时偶发的符号修饰或行号跳变。
+
+> Zig 的内存安全设计哲学（`?T`、`!T`、`[]T`、`Frame Arena`）仍被完整吸收，但它们全部由 Lunaria 编译器在编译期实现，运行时与构建链不再依赖 Zig 工具链。
 
 ---
 
@@ -23,7 +38,7 @@
 ## 目录
 
 1. **第一章：生态位与顶层取舍（Why Lunaria & Why Not Others?）**
-2. **第二章：实现技术栈与极速分发内核（Rust Stable + C/Zig `musttail` Kernel）**
+2. **第二章：实现技术栈与极速分发内核（Rust Stable + C99 `musttail` Kernel）**
 3. **第三章：类型系统、内存三驾马车与 Nim 级编译期 ARC 算法**
 4. **第四章：语法规范、Odin 级单趟解析器与 Luau 级槽位分配**
 5. **第五章：32 位定长字节码 ISA、寄存器重锚定与沙箱安全**
@@ -54,12 +69,14 @@ Lunaria 是一门**100% 纯正、正交的通用嵌入式编程语言**，但其
 
 ## 第二章：实现技术栈与极速分发内核（Implementation Stack）
 
-### 2.1 混合工程架构：95% Rust Stable + 5% C/Zig `musttail` 内核（带降级保护）
+### 2.1 混合工程架构：98% Rust Stable + 2% C99 `musttail` 内核（带降级保护）
 
 *   **主体工程（Rust Stable）：** 负责词法/语法分析、类型检查、CFG 与 ARC 借用消除 Pass、SlotMap 句柄池、Bumpalo 帧内存池、标准库以及 Rust/Go FFI 导出。
-*   **字节码分发内核（约 300~450 行 Clang C 或 Zig / 或 Rust Nightly `become`）：**
-    *   **Why C/Zig Shim on Stable Rust？** 经实测，Rust Stable（至 1.100+）尚未稳定开放 `#![feature(explicit_tail_calls)]`（`become` 关键字，报 E0554）；而普通 `loop { match op { ... } }` 仅有一个集中式间接跳转点，CPU 分支目标缓冲器（BTB）失效率高达 50%~80%。
-    *   通过 `build.rs` 调用 Clang/Zig 编译一个 300 行的分发内核文件，利用 `__attribute__((musttail))`（Clang / GCC 15+）或 Zig 的 `continue :vm`（`Labeled Switch`），使每条指令末尾直接生成独立的硬件间接跳转（ARM64 `br x16` / x86_64 `jmp rax`），将解释器吞吐量推升至 **15%~30% C**。
+*   **字节码分发内核（约 300 行 C99，`vm_dispatch.c`）：**
+    *   **Why C99 Shim on Stable Rust？** 经实测，Rust Stable（至 1.100+）尚未稳定开放 `#![feature(explicit_tail_calls)]`（`become` 关键字，报 E0554）；而普通 `loop { match op { ... } }` 仅有一个集中式间接跳转点，CPU 分支目标缓冲器（BTB）失效率高达 50%~80%。Zig 虽能生成同样的尾调用，但为 300 行代码引入一个未到 1.0、`build.zig` API 频繁破坏性变更的额外编译器，构建与长期维护性价比极低；且 C 与 Zig 最终走同一个 LLVM `musttail` IR 通道，机器码无任何差异。
+    *   **构建方式（`cc` crate）：** `build.rs` 调用 `cc` crate 自动探测系统 Clang / GCC 并编译 `vm_dispatch.c`，静态链接进 `lunaria-vm`。用户、Go 宿主工程、iOS Xcode 构建脚本与 GitHub Actions CI 均只需 `cargo build`，无需安装任何第三方语言工具链。
+    *   **分发实现：** 利用 `__attribute__((musttail))`（Clang / GCC 15+）使每条指令末尾生成独立的硬件间接跳转（ARM64 `br x16` / x86_64 `jmp rax`），将解释器吞吐量推升至 **15%~30% C**。Wasm3 的 `d_m3OpSig` / `M3_MUSTTAIL` 平台探测宏与 Luau 的 `LUAU_INSN_A/B/C/D` 解码宏可从现成 C/C++ 源码近乎原样复刻。
+    *   **Rust ↔ C 类型同步：** `VmContext`、`CallFrame` 等 `#[repr(C)]` 结构体由 `cbindgen` 生成 `vm_context.h` 供内核 `#include`，编译期杜绝字段偏移错位；LLDB / GDB / Xcode Instruments / `cargo flamegraph` 对 Rust↔C 混编的符号与 DWARF 行号支持最成熟。
     *   **平台降级与栈溢出保护（源自 `Wasm3 m3_config_platforms.h:93`）：** 在不支持 `musttail` 的旧编译器（如部分旧版 MSVC）上，自动回退至 Computed Goto（`&&label` 跳转表）或带调用深度上限（`MAX_CALL_DEPTH = 256`）的 Switch 循环，绝不发生静默原生栈溢出。
 
 ### 2.2 虚拟机核心上下文与“寄存器重锚定铁律”（`VmContext`）
@@ -93,7 +110,7 @@ pub struct VmContext {
 ```
 
 **内核编写铁律（The Re-anchoring Rule）：**
-在 C/Zig 分发内核中，`pc`（`*const u32`）、`base`（`*mut u64`）和 `fuel`（`i32`）作为 `musttail` 函数的寄存器参数传递以驻留物理 CPU 寄存器；但**在每一条 `CALL`、`CALL_CLOSURE`、`CALL_INTERFACE`、`CALL_HOST` 指令执行前后**，必须执行保存与重锚定：
+在 C99 分发内核中，`pc`（`*const u32`）、`base`（`*mut u64`）和 `fuel`（`i32`）作为 `musttail` 函数的寄存器参数传递以驻留物理 CPU 寄存器；但**在每一条 `CALL`、`CALL_CLOSURE`、`CALL_INTERFACE`、`CALL_HOST` 指令执行前后**，必须执行保存与重锚定：
 
 ```c
 // 调用前保存索引：
@@ -344,11 +361,11 @@ pub fn place_uniform_slot(rule: PackingRule, cursor: &mut usize, float_slots: us
 | 实施顺序与 Crate 名称 | 核心复用算法与先例锚点 | 真实预估代码量 (LOC) |
 | :--- | :--- | :--- |
 | **Step 1: `lunaria-handles`** | `slotmap` 奇偶版本号 `KeyData` (`RID`/`weak ?T`) + `bumpalo` 向下对齐 `FrameArena` | **350 ~ 500 行** (零外部依赖，第 1 天即可完结) |
-| **Step 2: `lunaria-vm`** | `Luau` 32位 `ABC/AD/E` 解码 + `Wasm3` `musttail` C/Zig 分发内核 + 跨调用 `base_offset` 重锚定 + 回边 `Fuel` | **500 ~ 750 行** |
+| **Step 2: `lunaria-vm`** | `Luau` 32位 `ABC/AD/E` 解码 + `Wasm3` `musttail` C99 分发内核（`cc` crate 编译）+ 跨调用 `base_offset` 重锚定 + 回边 `Fuel` | **500 ~ 750 行 Rust + 约 300 行 C99** |
 | **Step 3: `lunaria-syntax` & `lunaria-compiler` (Front-end)** | `Odin` `parse_binary_expr(lhs, prec)` 单趟解析 + 文件级 AST Arena + 类型检查 (`?T/!T/@no_alloc`) + `Luau` `RegScope` 槽位分配 | **2,500 ~ 3,800 行** |
 | **Step 4: `lunaria-ffi` & `lunaria-stdlib`** | `bytemuck` 显式 Padding 校验 + `Makepad` 40行 Uniform 打包 + 扁平 `LunariaUiStyle` + `wasmtime-go` 单向 `unsafe.Slice` 视图 | **900 ~ 1,300 行** |
 | **Step 5: `lunaria-arc` (Compiler Pass)** | `Nim` `injectdestructors.nim`：线性 CFG 构建 + 60行 `isLastReadImpl` + `nfFirstWrite` + `isCursor` 借用 + 逆序作用域析构 | **1,200 ~ 1,800 行** |
-| **总计（核心引擎闭环）** | — | **5,450 ~ 8,150 行 Rust + 300 行 C/Zig** |
+| **总计（核心引擎闭环）** | — | **5,450 ~ 8,150 行 Rust + 约 300 行 C99（98% Rust / 2% C99）** |
 
 ---
 
