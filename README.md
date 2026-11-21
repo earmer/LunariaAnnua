@@ -1,5 +1,7 @@
 # Lunaria Annua
 
+[![CI](https://github.com/earmer/LunariaAnnua/actions/workflows/ci.yml/badge.svg)](https://github.com/earmer/LunariaAnnua/actions/workflows/ci.yml)
+
 Programming language and bytecode VM for high-refresh graphics, dual-host
 (Rust / Go) zero-copy interop, and sub-millisecond on-device hot compilation.
 The architecture whitepaper is [`SPECIFICATION.md`](./SPECIFICATION.md).
